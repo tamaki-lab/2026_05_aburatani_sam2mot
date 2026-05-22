@@ -1,0 +1,21 @@
+det_conf_thr: 0.5
+iou_match_thr: 0.5
+free_ratio_thr: 0.7
+
+reliable_thr: 2.0
+pending_thr: 0.0
+lost_thr: -2.0
+lost_tolerance: 25
+
+enable_object_addition: true
+enable_object_removal: true
+enable_quality_reconstruction: true
+enable_cross_object_interaction: false
+
+coi_miou_thr: 0.8
+coi_score_gap_thr: 2.0
+coi_var_window: 10
+
+save_masks: true
+save_visualization: true
+max_frames: null
