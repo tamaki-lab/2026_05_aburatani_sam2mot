@@ -28,6 +28,7 @@ class Track:
         last_frame: MOT frame_id (1-indexed) of the last successful update.
         keyframe_idx: SAM2 frame_idx (0-indexed) of the last box prompt.
         active: Whether this track is still alive.
+        corrupted: Whether this track is marked as corrupted due to conflicts.
     """
     track_id: int
     state: str = STATE_RELIABLE
@@ -39,3 +40,4 @@ class Track:
     last_frame: int = 0
     keyframe_idx: int = 0
     active: bool = True
+    corrupted: bool = False

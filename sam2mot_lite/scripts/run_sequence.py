@@ -137,6 +137,8 @@ def run_sequence(
                 )
                 tm.update_track(track, mot_frame_id, mask, bbox, score)
 
+            tm.resolve_conflicts()
+
             # 2. Check for object addition and quality reconstruction
             dets = dets_by_frame.get(mot_frame_id, [])
             triggered_restart = tm.associate_and_update(

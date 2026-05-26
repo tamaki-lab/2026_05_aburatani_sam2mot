@@ -233,6 +233,101 @@ class TestTrajectoryManager(unittest.TestCase):
         self.assertEqual(wrapper.prompts[0], (1, 1, [0, 0, 10, 10]))
         self.assertEqual(t.keyframe_idx, 1)
 
+    def test_resolve_conflicts_disabled(self):
+        self.tm.config.update({
+            "enable_cross_object_interaction": False,
+            "coi_miou_thr": 0.8,
+        })
+        mask1 = np.ones((10, 10), dtype=np.uint8)
+        mask2 = np.ones((10, 10), dtype=np.uint8) # perfect overlap
+        
+        t1 = self.tm.create_track(1, mask1, [0, 0, 10, 10], 5.0, 0)
+        t2 = self.tm.create_track(1, mask2, [0, 0, 10, 10], 1.0, 0)
+        
+        self.tm.resolve_conflicts()
+        
+        # Since it is disabled, no track should be corrupted
+        self.assertFalse(t1.corrupted)
+        self.assertFalse(t2.corrupted)
+        self.assertIsNotNone(t1.mask)
+        self.assertIsNotNone(t2.mask)
+
+    def test_resolve_conflicts_score_gap(self):
+        self.tm.config.update({
+            "enable_cross_object_interaction": True,
+            "coi_miou_thr": 0.8,
+            "coi_score_gap_thr": 2.0,
+        })
+        mask1 = np.ones((10, 10), dtype=np.uint8)
+        mask2 = np.ones((10, 10), dtype=np.uint8) # perfect overlap
+        
+        t1 = self.tm.create_track(1, mask1, [0, 0, 10, 10], 5.0, 0)
+        t2 = self.tm.create_track(1, mask2, [0, 0, 10, 10], 1.0, 0)
+        
+        # score gap: 5.0 - 1.0 = 4.0 > 2.0. t2 should be corrupted
+        self.tm.resolve_conflicts()
+        
+        self.assertFalse(t1.corrupted)
+        self.assertTrue(t2.corrupted)
+        self.assertEqual(t2.state, STATE_SUSPICIOUS)
+        self.assertIsNone(t2.mask)
+        self.assertIsNone(t2.bbox)
+
+    def test_resolve_conflicts_variance(self):
+        self.tm.config.update({
+            "enable_cross_object_interaction": True,
+            "coi_miou_thr": 0.8,
+            "coi_score_gap_thr": 2.0,
+            "coi_var_window": 10,
+        })
+        mask1 = np.ones((10, 10), dtype=np.uint8)
+        mask2 = np.ones((10, 10), dtype=np.uint8)
+        
+        t1 = self.tm.create_track(1, mask1, [0, 0, 10, 10], 3.0, 0)
+        t2 = self.tm.create_track(1, mask2, [0, 0, 10, 10], 2.0, 0)
+        
+        # score gap: 3.0 - 2.0 = 1.0 <= 2.0 -> falls back to variance
+        # t1 history: stable [3.0, 3.0, 3.0, 3.0] -> var = 0
+        # t2 history: unstable [2.0, 10.0, -5.0, 2.0] -> var > 0
+        t1.score_history = [3.0, 3.0, 3.0, 3.0]
+        t2.score_history = [2.0, 10.0, -5.0, 2.0]
+        
+        self.tm.resolve_conflicts()
+        
+        self.assertFalse(t1.corrupted)
+        self.assertTrue(t2.corrupted)
+        self.assertEqual(t2.state, STATE_SUSPICIOUS)
+        self.assertIsNone(t2.mask)
+        self.assertIsNone(t2.bbox)
+
+    def test_resolve_conflicts_tie_breaker(self):
+        self.tm.config.update({
+            "enable_cross_object_interaction": True,
+            "coi_miou_thr": 0.8,
+            "coi_score_gap_thr": 2.0,
+            "coi_var_window": 10,
+        })
+        mask1 = np.ones((10, 10), dtype=np.uint8)
+        mask2 = np.ones((10, 10), dtype=np.uint8)
+        
+        t1 = self.tm.create_track(1, mask1, [0, 0, 10, 10], 3.0, 0)
+        t2 = self.tm.create_track(1, mask2, [0, 0, 10, 10], 2.0, 0)
+        
+        # score gap: 3.0 - 2.0 = 1.0 <= 2.0 -> falls back to variance
+        # identical history/variance
+        t1.score_history = [3.0, 3.0, 3.0]
+        t2.score_history = [2.0, 2.0, 2.0]
+        
+        # tie-breaker: t2 has lower current score (2.0 < 3.0) -> t2 corrupted
+        self.tm.resolve_conflicts()
+        
+        self.assertFalse(t1.corrupted)
+        self.assertTrue(t2.corrupted)
+        self.assertEqual(t2.state, STATE_SUSPICIOUS)
+        self.assertIsNone(t2.mask)
+        self.assertIsNone(t2.bbox)
+
+
 
 if __name__ == "__main__":
     unittest.main()

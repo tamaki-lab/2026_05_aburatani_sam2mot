@@ -20,7 +20,7 @@ from tracker.track import (
 )
 from tracker.detection import Detection
 from tracker.matching import iou_matching
-from tracker.mask_utils import union_masks, compute_free_area_ratio
+from tracker.mask_utils import union_masks, compute_free_area_ratio, mask_iou
 
 
 class TrajectoryManager:
@@ -355,3 +355,72 @@ class TrajectoryManager:
                         triggered_restart = True
 
         return triggered_restart
+
+    def resolve_conflicts(self) -> None:
+        """
+        Milestone 8: Cross-object Interaction Approximation.
+        Detect conflicts where active tracks overlap significantly in their binary masks,
+        and degrade/corrupt the less stable track.
+        """
+        enable_coi = self.config.get("enable_cross_object_interaction", False)
+        if not enable_coi:
+            return
+
+        coi_miou_thr = self.config.get("coi_miou_thr", 0.8)
+        coi_score_gap_thr = self.config.get("coi_score_gap_thr", 2.0)
+        coi_var_window = self.config.get("coi_var_window", 10)
+
+        active_tracks = self.get_active_tracks()
+        # Only check active tracks with a valid mask
+        valid_tracks = [t for t in active_tracks if t.mask is not None]
+
+        corrupted_track_ids = set()
+
+        for i in range(len(valid_tracks)):
+            for j in range(i + 1, len(valid_tracks)):
+                ti = valid_tracks[i]
+                tj = valid_tracks[j]
+
+                if ti.track_id in corrupted_track_ids or tj.track_id in corrupted_track_ids:
+                    continue
+
+                miou = mask_iou(ti.mask, tj.mask)
+                if miou > coi_miou_thr:
+                    # Conflict found!
+                    score_i = ti.score
+                    score_j = tj.score
+
+                    # 1. Score Gap Check
+                    if abs(score_i - score_j) > coi_score_gap_thr:
+                        if score_i < score_j:
+                            corrupted_track_ids.add(ti.track_id)
+                        else:
+                            corrupted_track_ids.add(tj.track_id)
+                    else:
+                        # 2. Variance Check
+                        hist_i = ti.score_history[-coi_var_window:]
+                        hist_j = tj.score_history[-coi_var_window:]
+
+                        var_i = float(np.var(hist_i)) if hist_i else 0.0
+                        var_j = float(np.var(hist_j)) if hist_j else 0.0
+
+                        if abs(var_i - var_j) > 1e-9:
+                            if var_i > var_j:
+                                corrupted_track_ids.add(ti.track_id)
+                            else:
+                                corrupted_track_ids.add(tj.track_id)
+                        else:
+                            # 3. Tie-breaker
+                            if score_i < score_j:
+                                corrupted_track_ids.add(ti.track_id)
+                            else:
+                                corrupted_track_ids.add(tj.track_id)
+
+        # Degrade corrupted tracks
+        for track in valid_tracks:
+            if track.track_id in corrupted_track_ids:
+                print(f"[TrajectoryManager] Track {track.track_id} marked as corrupted due to mask conflict.")
+                track.corrupted = True
+                track.state = STATE_SUSPICIOUS
+                track.mask = None
+                track.bbox = None
