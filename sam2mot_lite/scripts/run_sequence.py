@@ -210,6 +210,14 @@ def run_sequence(
 
     print("[run_sequence] 完了.")
 
+    # Clean up GPU memory
+    del wrapper
+    import gc
+    gc.collect()
+    import torch
+    torch.cuda.empty_cache()
+
+
 
 def main():
     parser = argparse.ArgumentParser(
