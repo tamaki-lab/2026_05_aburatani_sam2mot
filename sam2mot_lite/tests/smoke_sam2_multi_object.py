@@ -28,8 +28,10 @@ from tracker.result_writer import write_trajectories
 
 def main():
     parser = argparse.ArgumentParser(description="Smoke test for SAM2 multi object.")
-    parser.add_argument("--config", type=str, default="configs/sam2.1/sam2.1_hiera_t.yaml", help="SAM2 config name")
-    parser.add_argument("--checkpoint", type=str, default="sam2/checkpoints/sam2.1_hiera_tiny.pt", help="Path to SAM2 checkpoint")
+    parser.add_argument("--config", type=str, default="configs/sam2.1/sam2.1_hiera_t.yaml",
+                        help="SAM2 config name (relative to sam2 package config search path)")
+    parser.add_argument("--checkpoint", type=str, default="sam2/checkpoints/sam2.1_hiera_tiny.pt",
+                        help="Path to SAM2 checkpoint file")
     args = parser.parse_args()
 
     try:
