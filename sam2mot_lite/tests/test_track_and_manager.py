@@ -161,6 +161,48 @@ class TestTrajectoryManager(unittest.TestCase):
         self.assertEqual(res[0].track_id, 2)
         self.assertEqual(res[0].bbox, [60, 60, 90, 90])
 
+    def test_state_transitions_reliable_to_lost(self):
+        # Configure thresholds
+        self.tm.config.update({
+            "reliable_thr": 2.0,
+            "pending_thr": 0.0,
+            "lost_thr": -2.0,
+            "lost_tolerance": 3
+        })
+        
+        t = self.tm.create_track(1, None, [0, 0, 10, 10], 2.5, 0)
+        self.assertEqual(t.state, STATE_RELIABLE)
+        self.assertEqual(t.lost_count, 0)
+        self.assertTrue(t.active)
+        
+        mask = np.ones((10, 10), dtype=np.uint8)
+        
+        # 1. State becomes reliable (score >= 2.0)
+        self.tm.update_track(t, 2, mask, [1, 1, 11, 11], 2.2)
+        self.assertEqual(t.state, STATE_RELIABLE)
+        self.assertEqual(t.lost_count, 0)
+        
+        # 2. State degrades to pending (0.0 <= score < 2.0)
+        self.tm.update_track(t, 3, mask, [2, 2, 12, 12], 1.5)
+        self.assertEqual(t.state, STATE_PENDING)
+        self.assertEqual(t.lost_count, 0)
+        
+        # 3. State degrades to suspicious (-2.0 <= score < 0.0) -> lost_count increments!
+        self.tm.update_track(t, 4, mask, [3, 3, 13, 13], -0.5)
+        self.assertEqual(t.state, STATE_SUSPICIOUS)
+        self.assertEqual(t.lost_count, 1)
+        
+        # 4. State degrades to lost (score < -2.0) -> lost_count increments!
+        self.tm.update_track(t, 5, mask, [4, 4, 14, 14], -3.0)
+        self.assertEqual(t.state, STATE_LOST)
+        self.assertEqual(t.lost_count, 2)
+        
+        # 5. Mask is None -> state is STATE_LOST, lost_count increments to 3 -> active is False!
+        self.tm.update_track(t, 6, None, None, 0.0)
+        self.assertEqual(t.state, STATE_LOST)
+        self.assertEqual(t.lost_count, 3)
+        self.assertFalse(t.active)  # Terminated!
+
 
 if __name__ == "__main__":
     unittest.main()

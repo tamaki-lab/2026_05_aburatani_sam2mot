@@ -11,7 +11,13 @@ M5+ will add: object addition, removal, quality reconstruction, COI.
 from typing import Dict, List, Optional, Tuple
 import numpy as np
 
-from tracker.track import Track, STATE_RELIABLE
+from tracker.track import (
+    Track,
+    STATE_RELIABLE,
+    STATE_PENDING,
+    STATE_SUSPICIOUS,
+    STATE_LOST,
+)
 from tracker.detection import Detection
 from tracker.matching import iou_matching
 from tracker.mask_utils import union_masks, compute_free_area_ratio
@@ -110,10 +116,33 @@ class TrajectoryManager:
         track.score_history.append(score)
         track.last_frame = frame_id
 
-        if mask is not None:
+        # 1. State Transition
+        reliable_thr = self.config.get("reliable_thr", 2.0)
+        pending_thr = self.config.get("pending_thr", 0.0)
+        lost_thr = self.config.get("lost_thr", -2.0)
+        lost_tolerance = self.config.get("lost_tolerance", 25)
+
+        if mask is None:
+            track.state = STATE_LOST
+        else:
+            if score >= reliable_thr:
+                track.state = STATE_RELIABLE
+            elif score >= pending_thr:
+                track.state = STATE_PENDING
+            elif score >= lost_thr:
+                track.state = STATE_SUSPICIOUS
+            else:
+                track.state = STATE_LOST
+
+        # 2. Lost Count Tracking
+        if mask is not None and track.state in (STATE_RELIABLE, STATE_PENDING):
             track.lost_count = 0
         else:
             track.lost_count += 1
+
+        # 3. Termination
+        if track.lost_count >= lost_tolerance:
+            track.active = False
 
     # ------------------------------------------------------------------
     # Queries

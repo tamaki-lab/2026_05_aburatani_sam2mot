@@ -157,8 +157,9 @@ def run_sequence(
 
             # 3. If no new objects were added, write trajectories for this frame
             if not added_new_object:
+                from tracker.track import STATE_RELIABLE, STATE_PENDING
                 for track in tm.get_active_tracks():
-                    if track.bbox is not None:
+                    if track.bbox is not None and track.state in (STATE_RELIABLE, STATE_PENDING):
                         x1, y1, x2, y2 = track.bbox
                         trajectories.append(
                             {
