@@ -203,6 +203,36 @@ class TestTrajectoryManager(unittest.TestCase):
         self.assertEqual(t.lost_count, 3)
         self.assertFalse(t.active)  # Terminated!
 
+    def test_associate_and_update_reconstruction(self):
+        from tracker.detection import Detection
+        # Create a pending track
+        t = self.tm.create_track(1, None, [0, 0, 10, 10], 1.5, 0)
+        t.state = STATE_PENDING
+        
+        # Detection matches the pending track (IoU = 1.0)
+        dets = [Detection(frame_id=2, box_xyxy=[0, 0, 10, 10], score=0.9)]
+        
+        # Mock SAM2 wrapper
+        class MockWrapper:
+            def __init__(self):
+                self.prompts = []
+            def add_box_prompt(self, frame_idx, obj_id, box_xyxy):
+                self.prompts.append((frame_idx, obj_id, box_xyxy))
+                # Return dummy prompted mask/bbox/score
+                m = np.ones((10, 10), dtype=np.uint8)
+                return m, box_xyxy, 2.5
+                
+        wrapper = MockWrapper()
+        
+        # Run association and update
+        triggered = self.tm.associate_and_update(frame_id=2, frame_idx=1, detections=dets, wrapper=wrapper)
+        
+        # Verify that reconstruction was triggered
+        self.assertTrue(triggered)
+        self.assertEqual(len(wrapper.prompts), 1)
+        self.assertEqual(wrapper.prompts[0], (1, 1, [0, 0, 10, 10]))
+        self.assertEqual(t.keyframe_idx, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

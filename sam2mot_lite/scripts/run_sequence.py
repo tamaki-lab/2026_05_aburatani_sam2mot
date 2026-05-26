@@ -137,20 +137,16 @@ def run_sequence(
                 )
                 tm.update_track(track, mot_frame_id, mask, bbox, score)
 
-            # 2. Check for object addition
+            # 2. Check for object addition and quality reconstruction
             dets = dets_by_frame.get(mot_frame_id, [])
-            new_tracks = tm.add_new_objects(
+            triggered_restart = tm.associate_and_update(
                 frame_id=mot_frame_id,
                 frame_idx=out_frame_idx,
                 detections=dets,
                 wrapper=wrapper
             )
 
-            if new_tracks:
-                print(
-                    f"[run_sequence] フレーム {mot_frame_id} (idx {out_frame_idx}) にて "
-                    f"{len(new_tracks)} 個の新規オブジェクトを検出しました."
-                )
+            if triggered_restart:
                 added_new_object = True
                 current_idx = out_frame_idx  # Restart propagation from this frame!
                 break  # Break inner generator loop

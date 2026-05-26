@@ -252,3 +252,106 @@ class TrajectoryManager:
                     free_mask = np.logical_and(free_mask, np.logical_not(mask))
 
         return newly_added
+
+    def associate_and_update(
+        self,
+        frame_id: int,
+        frame_idx: int,
+        detections: List[Detection],
+        wrapper,
+    ) -> bool:
+        """
+        Perform association, quality reconstruction (re-prompting pending tracks),
+        and object addition (prompting new tracks) in a single unified step.
+        
+        Returns:
+            triggered_restart: bool, True if any track was prompted or re-prompted, 
+                              indicating that propagation should break and restart.
+        """
+        det_conf_thr = self.config.get("det_conf_thr", 0.5)
+        iou_match_thr = self.config.get("iou_match_thr", 0.5)
+        free_ratio_thr = self.config.get("free_ratio_thr", 0.7)
+        enable_reconstruction = self.config.get("enable_quality_reconstruction", True)
+        enable_addition = self.config.get("enable_object_addition", True)
+
+        # 1. Filter detections with score >= det_conf_thr
+        filtered_dets = [d for d in detections if d.score >= det_conf_thr]
+        if not filtered_dets:
+            return False
+
+        active_tracks = self.get_active_tracks()
+
+        # 2. Compute IoU matching between active tracks and detections
+        track_boxes = [t.bbox for t in active_tracks if t.bbox is not None]
+        det_boxes = [d.box_xyxy for d in filtered_dets]
+
+        matches, unmatched_tracks, unmatched_detections = iou_matching(
+            track_boxes, det_boxes, iou_thr=iou_match_thr
+        )
+
+        triggered_restart = False
+
+        # 3. Quality Reconstruction for matched pending tracks
+        if enable_reconstruction:
+            from tracker.track import STATE_PENDING
+            for t_idx, d_idx in matches:
+                track = active_tracks[t_idx]
+                det = filtered_dets[d_idx]
+                if track.state == STATE_PENDING and track.keyframe_idx != frame_idx:
+                    print(
+                        f"[TrajectoryManager] Re-prompting Track {track.track_id} (state: {track.state}) "
+                        f"using detection at frame {frame_id} for Quality Reconstruction."
+                    )
+                    mask, bbox, score = wrapper.add_box_prompt(
+                        frame_idx, track.track_id, det.box_xyxy
+                    )
+                    if mask is not None:
+                        # Update track keyframe index
+                        track.keyframe_idx = frame_idx
+                        triggered_restart = True
+
+        # 4. Object Addition for unmatched detections
+        if enable_addition:
+            # Find H, W from existing masks or wrapper inference state if no masks exist yet
+            H, W = None, None
+            for t in active_tracks:
+                if t.mask is not None:
+                    H, W = t.mask.shape
+                    break
+
+            if H is None or W is None:
+                # Fall back to wrapper dimensions
+                if hasattr(wrapper, "inference_state") and wrapper.inference_state is not None:
+                    H = wrapper.inference_state.get("video_height")
+                    W = wrapper.inference_state.get("video_width")
+                if H is None or W is None:
+                    H, W = 480, 640
+
+            valid_masks = [t.mask for t in active_tracks if t.mask is not None]
+            union = union_masks(valid_masks)
+            if union is not None:
+                free_mask = np.logical_not(union)
+            else:
+                free_mask = np.ones((H, W), dtype=bool)
+
+            candidates = [filtered_dets[i] for i in unmatched_detections]
+            for det in candidates:
+                ratio = compute_free_area_ratio(det.box_xyxy, free_mask)
+                if ratio >= free_ratio_thr:
+                    obj_id = self.next_track_id
+                    mask, bbox, score = wrapper.add_box_prompt(
+                        frame_idx, obj_id, det.box_xyxy
+                    )
+                    if mask is not None:
+                        track = self.create_track(
+                            frame_id=frame_id,
+                            mask=mask,
+                            bbox=bbox,
+                            score=score,
+                            keyframe_idx=frame_idx,
+                        )
+                        # Update free_mask so subsequent candidates in this frame don't overlap
+                        free_mask = np.logical_and(free_mask, np.logical_not(mask))
+                        triggered_restart = True
+
+        return triggered_restart
