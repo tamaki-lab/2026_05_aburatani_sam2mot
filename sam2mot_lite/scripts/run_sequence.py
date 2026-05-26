@@ -114,39 +114,72 @@ def run_sequence(
     masks_to_save: dict = {}  # frame_id -> {track_id: mask}
 
     start_idx = mot_to_sam2_frame(first_frame)
+    current_idx = start_idx
     frame_count = 0
+    total_frames = wrapper.inference_state["num_frames"]
 
     print("[run_sequence] マスクを伝播中...")
-    for out_frame_idx, out_obj_ids, out_mask_logits in wrapper.propagate_in_video(
-        start_frame_idx=start_idx
-    ):
-        mot_frame_id = sam2_to_mot_frame(out_frame_idx)
-
+    while current_idx < total_frames:
         if max_frames is not None and frame_count >= max_frames:
             break
 
-        for track in tm.get_active_tracks():
-            mask, bbox, score = wrapper.extract_result(
-                out_obj_ids, out_mask_logits, track.track_id
-            )
-            tm.update_track(track, mot_frame_id, mask, bbox, score)
+        added_new_object = False
 
-            if bbox is not None:
-                x1, y1, x2, y2 = bbox
-                trajectories.append(
-                    {
-                        "frame_id": mot_frame_id,
-                        "track_id": track.track_id,
-                        "bbox_xywh": [x1, y1, x2 - x1, y2 - y1],
-                        "score": score,
-                    }
+        for out_frame_idx, out_obj_ids, out_mask_logits in wrapper.propagate_in_video(
+            start_frame_idx=current_idx
+        ):
+            mot_frame_id = sam2_to_mot_frame(out_frame_idx)
+
+            # 1. Update existing tracks with propagation results
+            for track in tm.get_active_tracks():
+                mask, bbox, score = wrapper.extract_result(
+                    out_obj_ids, out_mask_logits, track.track_id
                 )
-                if save_masks and mask is not None:
-                    masks_to_save.setdefault(mot_frame_id, {})[
-                        track.track_id
-                    ] = mask
+                tm.update_track(track, mot_frame_id, mask, bbox, score)
 
-        frame_count += 1
+            # 2. Check for object addition
+            dets = dets_by_frame.get(mot_frame_id, [])
+            new_tracks = tm.add_new_objects(
+                frame_id=mot_frame_id,
+                frame_idx=out_frame_idx,
+                detections=dets,
+                wrapper=wrapper
+            )
+
+            if new_tracks:
+                print(
+                    f"[run_sequence] フレーム {mot_frame_id} (idx {out_frame_idx}) にて "
+                    f"{len(new_tracks)} 個の新規オブジェクトを検出しました."
+                )
+                added_new_object = True
+                current_idx = out_frame_idx  # Restart propagation from this frame!
+                break  # Break inner generator loop
+
+            # 3. If no new objects were added, write trajectories for this frame
+            if not added_new_object:
+                for track in tm.get_active_tracks():
+                    if track.bbox is not None:
+                        x1, y1, x2, y2 = track.bbox
+                        trajectories.append(
+                            {
+                                "frame_id": mot_frame_id,
+                                "track_id": track.track_id,
+                                "bbox_xywh": [x1, y1, x2 - x1, y2 - y1],
+                                "score": track.score,
+                            }
+                        )
+                        if save_masks and track.mask is not None:
+                            masks_to_save.setdefault(mot_frame_id, {})[
+                                track.track_id
+                            ] = track.mask
+
+                frame_count += 1
+                if max_frames is not None and frame_count >= max_frames:
+                    break
+
+        if not added_new_object:
+            # Reached end of video or propagation completed without restarts
+            break
 
     # ------------------------------------------------------------------ #
     # 5. 結果書き出し

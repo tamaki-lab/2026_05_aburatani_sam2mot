@@ -98,6 +98,69 @@ class TestTrajectoryManager(unittest.TestCase):
         self.tm.update_track(t, 3, None, None, 0.5)
         self.assertEqual(t.score_history, [0.9, 0.7, 0.5])
 
+    def test_add_new_objects_no_addition_config(self):
+        # When addition is disabled, it should return empty
+        self.tm.config["enable_object_addition"] = False
+        from tracker.detection import Detection
+        dets = [Detection(frame_id=2, box_xyxy=[0, 0, 10, 10], score=0.9)]
+        res = self.tm.add_new_objects(frame_id=2, frame_idx=1, detections=dets, wrapper=None)
+        self.assertEqual(res, [])
+
+    def test_add_new_objects_below_conf_threshold(self):
+        from tracker.detection import Detection
+        dets = [Detection(frame_id=2, box_xyxy=[0, 0, 10, 10], score=0.4)]
+        res = self.tm.add_new_objects(frame_id=2, frame_idx=1, detections=dets, wrapper=None)
+        self.assertEqual(res, [])
+
+    def test_add_new_objects_matching_existing_active_track(self):
+        from tracker.detection import Detection
+        # Existing track has bbox [0, 0, 10, 10]
+        self.tm.create_track(1, None, [0, 0, 10, 10], 0.9, 0)
+        
+        # Detection matches the existing track (IoU = 1.0)
+        dets = [Detection(frame_id=2, box_xyxy=[0, 0, 10, 10], score=0.9)]
+        res = self.tm.add_new_objects(frame_id=2, frame_idx=1, detections=dets, wrapper=None)
+        self.assertEqual(res, [])
+
+    def test_add_new_objects_low_free_area_ratio(self):
+        from tracker.detection import Detection
+        # Existing track has a mask at [0, 0, 100, 100]
+        mask = np.zeros((100, 100), dtype=np.uint8)
+        mask[0:50, 0:50] = 1
+        t = self.tm.create_track(1, mask, [0, 0, 50, 50], 0.9, 0)
+        
+        # Detection overlaps heavily with the existing mask (free area ratio is low)
+        # Bbox is [10, 10, 30, 30] which is entirely inside the mask, so free area ratio is 0.0
+        dets = [Detection(frame_id=2, box_xyxy=[10, 10, 30, 30], score=0.9)]
+        res = self.tm.add_new_objects(frame_id=2, frame_idx=1, detections=dets, wrapper=None)
+        self.assertEqual(res, [])
+
+    def test_add_new_objects_successful_addition(self):
+        from tracker.detection import Detection
+        # Existing track has a mask at [0, 0, 50, 50]
+        mask = np.zeros((100, 100), dtype=np.uint8)
+        mask[0:50, 0:50] = 1
+        t = self.tm.create_track(1, mask, [0, 0, 50, 50], 0.9, 0)
+        
+        # Detection is in the free area: [60, 60, 90, 90]
+        dets = [Detection(frame_id=2, box_xyxy=[60, 60, 90, 90], score=0.9)]
+        
+        # Mock SAM2 wrapper
+        class MockWrapper:
+            def __init__(self):
+                self.inference_state = {"video_height": 100, "video_width": 100}
+            def add_box_prompt(self, frame_idx, obj_id, box_xyxy):
+                # Return a valid dummy mask
+                m = np.zeros((100, 100), dtype=np.uint8)
+                m[60:90, 60:90] = 1
+                return m, box_xyxy, 0.95
+                
+        wrapper = MockWrapper()
+        res = self.tm.add_new_objects(frame_id=2, frame_idx=1, detections=dets, wrapper=wrapper)
+        self.assertEqual(len(res), 1)
+        self.assertEqual(res[0].track_id, 2)
+        self.assertEqual(res[0].bbox, [60, 60, 90, 90])
+
 
 if __name__ == "__main__":
     unittest.main()

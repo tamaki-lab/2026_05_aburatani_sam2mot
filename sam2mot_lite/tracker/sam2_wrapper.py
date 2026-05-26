@@ -53,12 +53,30 @@ class SAM2Wrapper:
             
         box_np = np.array(box_xyxy, dtype=np.float32)
         
-        _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
-            inference_state=self.inference_state,
-            frame_idx=frame_idx,
-            obj_id=obj_id,
-            box=box_np
-        )
+        # Bypass tracking started check and frames_already_tracked if active
+        was_tracking = self.inference_state.get("tracking_has_started", False)
+        old_tracked = self.inference_state.get("frames_already_tracked", {})
+        
+        if was_tracking:
+            self.inference_state["tracking_has_started"] = False
+        # Treat this prompt frame as the initial conditioning frame for this object
+        self.inference_state["frames_already_tracked"] = {}
+            
+        try:
+            _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
+                inference_state=self.inference_state,
+                frame_idx=frame_idx,
+                obj_id=obj_id,
+                box=box_np
+            )
+            
+            # Pad historical frame outputs to match the new batch size if a new object was registered
+            new_batch_size = len(self.inference_state["obj_ids"])
+            self._pad_historical_states(new_batch_size)
+        finally:
+            if was_tracking:
+                self.inference_state["tracking_has_started"] = True
+            self.inference_state["frames_already_tracked"] = old_tracked
         
         return self._extract_mask_and_box(out_obj_ids, out_mask_logits, obj_id)
 
@@ -95,3 +113,82 @@ class SAM2Wrapper:
         score = float(positive_logits.mean()) if len(positive_logits) > 0 else 0.0
         
         return mask_binary, box_xyxy, score
+
+    def _pad_historical_states(self, new_batch_size: int):
+        """
+        Pads all historical frame outputs in inference_state['output_dict'] and 
+        inference_state['output_dict_per_obj'] to match the new batch size.
+        This resolves shape mismatch errors when retrieving memory features 
+        for frames prior to the introduction of a new object.
+        """
+        import torch
+        from sam2.modeling.sam2_base import NO_OBJ_SCORE
+        
+        state = self.inference_state
+        if state is None:
+            return
+            
+        output_dict = state.get("output_dict", {})
+        for storage_key in ["cond_frame_outputs", "non_cond_frame_outputs"]:
+            frames_dict = output_dict.get(storage_key, {})
+            for frame_idx, out in list(frames_dict.items()):
+                # Check the current shape of pred_masks
+                if out.get("pred_masks") is None:
+                    continue
+                current_b = out["pred_masks"].shape[0]
+                if current_b >= new_batch_size:
+                    continue
+                
+                pad_size = new_batch_size - current_b
+                device = out["pred_masks"].device
+                
+                # 1. Pad pred_masks
+                H, W = out["pred_masks"].shape[-2:]
+                pad_masks = torch.full((pad_size, 1, H, W), NO_OBJ_SCORE, dtype=torch.float32, device=device)
+                out["pred_masks"] = torch.cat([out["pred_masks"], pad_masks], dim=0)
+                
+                # 2. Pad obj_ptr with zeros (since it is a feature embedding, not a logit/score)
+                hidden_dim = out["obj_ptr"].shape[-1]
+                pad_ptr = torch.zeros((pad_size, hidden_dim), dtype=torch.float32, device=device)
+                out["obj_ptr"] = torch.cat([out["obj_ptr"], pad_ptr], dim=0)
+                
+                # 3. Pad object_score_logits
+                pad_logits = torch.full((pad_size, 1), NO_OBJ_SCORE, dtype=torch.float32, device=device)
+                out["object_score_logits"] = torch.cat([out["object_score_logits"], pad_logits], dim=0)
+                
+                # 4. Pad maskmem_features
+                if out.get("maskmem_features") is not None:
+                    C, H_m, W_m = out["maskmem_features"].shape[-3:]
+                    pad_feat = torch.zeros((pad_size, C, H_m, W_m), dtype=torch.float32, device=device)
+                    out["maskmem_features"] = torch.cat([out["maskmem_features"], pad_feat], dim=0)
+                    
+                # 5. Pad maskmem_pos_enc
+                if out.get("maskmem_pos_enc") is not None:
+                    padded_pos_enc = []
+                    for pos in out["maskmem_pos_enc"]:
+                        C_pos, H_pos, W_pos = pos.shape[-3:]
+                        pad_pos = torch.zeros((pad_size, C_pos, H_pos, W_pos), dtype=torch.float32, device=device)
+                        padded_pos_enc.append(torch.cat([pos, pad_pos], dim=0))
+                    out["maskmem_pos_enc"] = padded_pos_enc
+                
+                # Update output_dict_per_obj slices for all objects (including the new ones)
+                for obj_idx in range(new_batch_size):
+                    obj_slice = slice(obj_idx, obj_idx + 1)
+                    obj_out = {
+                        "maskmem_features": None,
+                        "maskmem_pos_enc": None,
+                        "pred_masks": out["pred_masks"][obj_slice],
+                        "obj_ptr": out["obj_ptr"][obj_slice],
+                        "object_score_logits": out["object_score_logits"][obj_slice],
+                    }
+                    if out.get("maskmem_features") is not None:
+                        obj_out["maskmem_features"] = out["maskmem_features"][obj_slice]
+                    if out.get("maskmem_pos_enc") is not None:
+                        obj_out["maskmem_pos_enc"] = [x[obj_slice] for x in out["maskmem_pos_enc"]]
+                        
+                    if obj_idx not in state["output_dict_per_obj"]:
+                        state["output_dict_per_obj"][obj_idx] = {
+                            "cond_frame_outputs": {},
+                            "non_cond_frame_outputs": {}
+                        }
+                    state["output_dict_per_obj"][obj_idx][storage_key][frame_idx] = obj_out
