@@ -183,9 +183,13 @@ def run_sequence(
     # ------------------------------------------------------------------ #
     # 5. 結果書き出し
     # ------------------------------------------------------------------ #
-    os.makedirs(output_dir, exist_ok=True)
+    if output_dir.endswith(".txt"):
+        traj_path = output_dir
+        os.makedirs(os.path.dirname(traj_path), exist_ok=True)
+    else:
+        os.makedirs(output_dir, exist_ok=True)
+        traj_path = os.path.join(output_dir, "trajectories.txt")
 
-    traj_path = os.path.join(output_dir, "trajectories.txt")
     write_trajectories(traj_path, trajectories)
     print(
         f"[run_sequence] {len(trajectories)} エントリを "
@@ -193,7 +197,13 @@ def run_sequence(
     )
 
     if save_masks and masks_to_save:
-        masks_dir = os.path.join(output_dir, "masks")
+        if output_dir.endswith(".txt"):
+            base_dir = os.path.dirname(output_dir)
+            base_name = os.path.splitext(os.path.basename(output_dir))[0]
+            masks_dir = os.path.join(base_dir, f"{base_name}_masks")
+        else:
+            masks_dir = os.path.join(output_dir, "masks")
+            
         os.makedirs(masks_dir, exist_ok=True)
         for frame_id, track_masks in masks_to_save.items():
             save_dict = {

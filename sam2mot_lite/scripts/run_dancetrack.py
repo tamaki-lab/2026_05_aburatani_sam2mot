@@ -106,9 +106,15 @@ def main():
         print(f"[{i}/{len(sequences)}] Processing sequence: {seq}")
         print(f"==========================================")
 
+        # Extract dataset name (e.g. "dancetrack" from "data/DanceTrack/val")
+        parent_dir = os.path.dirname(args.video_folder.rstrip("/"))
+        dataset_name = os.path.basename(parent_dir).lower() if parent_dir else "dancetrack"
+        if not dataset_name:
+            dataset_name = "dancetrack"
+
         frames_dir = os.path.join(args.video_folder, seq, "img1")
         detections_file = os.path.join(args.video_folder, seq, "gt", "gt.txt")
-        seq_output_dir = os.path.join(args.output_dir, seq)
+        seq_output_path = os.path.join(args.output_dir, dataset_name, f"{seq}.txt")
 
         if not os.path.exists(frames_dir):
             print(f"[WARNING] Frames directory not found: {frames_dir}. Skipping.")
@@ -124,7 +130,7 @@ def main():
                 config=config,
                 sam2_config=args.sam2_config,
                 checkpoint=args.checkpoint,
-                output_dir=seq_output_dir,
+                output_dir=seq_output_path,
                 device=args.device,
             )
             print(f"[SUCCESS] Sequence {seq} completed successfully.")
