@@ -125,56 +125,70 @@ def run_sequence(
 
         added_new_object = False
 
-        for out_frame_idx, out_obj_ids, out_mask_logits in wrapper.propagate_in_video(
-            start_frame_idx=current_idx
-        ):
-            mot_frame_id = sam2_to_mot_frame(out_frame_idx)
+        gen = wrapper.propagate_in_video(start_frame_idx=current_idx)
+        try:
+            for out_frame_idx, out_obj_ids, out_mask_logits in gen:
+                mot_frame_id = sam2_to_mot_frame(out_frame_idx)
 
-            # 1. Update existing tracks with propagation results
-            for track in tm.get_active_tracks():
-                mask, bbox, score = wrapper.extract_result(
-                    out_obj_ids, out_mask_logits, track.track_id
-                )
-                tm.update_track(track, mot_frame_id, mask, bbox, score)
-
-            tm.resolve_conflicts()
-
-            # 2. Check for object addition and quality reconstruction
-            dets = dets_by_frame.get(mot_frame_id, [])
-            triggered_restart = tm.associate_and_update(
-                frame_id=mot_frame_id,
-                frame_idx=out_frame_idx,
-                detections=dets,
-                wrapper=wrapper
-            )
-
-            if triggered_restart:
-                added_new_object = True
-                current_idx = out_frame_idx  # Restart propagation from this frame!
-                break  # Break inner generator loop
-
-            # 3. If no new objects were added, write trajectories for this frame
-            if not added_new_object:
-                from tracker.track import STATE_RELIABLE, STATE_PENDING
+                # 1. Update existing tracks with propagation results
                 for track in tm.get_active_tracks():
-                    if track.bbox is not None and track.state in (STATE_RELIABLE, STATE_PENDING):
-                        x1, y1, x2, y2 = track.bbox
-                        trajectories.append(
-                            {
-                                "frame_id": mot_frame_id,
-                                "track_id": track.track_id,
-                                "bbox_xywh": [x1, y1, x2 - x1, y2 - y1],
-                                "score": track.score,
-                            }
-                        )
-                        if save_masks and track.mask is not None:
-                            masks_to_save.setdefault(mot_frame_id, {})[
-                                track.track_id
-                            ] = track.mask
+                    mask, bbox, score = wrapper.extract_result(
+                        out_obj_ids, out_mask_logits, track.track_id
+                    )
+                    tm.update_track(track, mot_frame_id, mask, bbox, score)
 
-                frame_count += 1
-                if max_frames is not None and frame_count >= max_frames:
-                    break
+                tm.resolve_conflicts()
+
+                # 2. Check for object addition and quality reconstruction
+                dets = dets_by_frame.get(mot_frame_id, [])
+                triggered_restart = tm.associate_and_update(
+                    frame_id=mot_frame_id,
+                    frame_idx=out_frame_idx,
+                    detections=dets,
+                    wrapper=wrapper
+                )
+
+                if triggered_restart:
+                    added_new_object = True
+                    current_idx = out_frame_idx  # Restart propagation from this frame!
+                    gen.close()  # Close the generator immediately to free VRAM
+                    break  # Break inner generator loop
+
+                # 3. If no new objects were added, write trajectories for this frame
+                if not added_new_object:
+                    from tracker.track import STATE_RELIABLE, STATE_PENDING
+                    for track in tm.get_active_tracks():
+                        if track.bbox is not None and track.state in (STATE_RELIABLE, STATE_PENDING):
+                            x1, y1, x2, y2 = track.bbox
+                            trajectories.append(
+                                {
+                                    "frame_id": mot_frame_id,
+                                    "track_id": track.track_id,
+                                    "bbox_xywh": [x1, y1, x2 - x1, y2 - y1],
+                                    "score": track.score,
+                                }
+                            )
+                            if save_masks and track.mask is not None:
+                                masks_to_save.setdefault(mot_frame_id, {})[
+                                    track.track_id
+                                ] = track.mask
+
+                    frame_count += 1
+
+                    # 4. Prune old non-conditioning memory to prevent Out of Memory
+                    prune_horizon = 48
+                    if out_frame_idx > prune_horizon:
+                        prune_idx = out_frame_idx - prune_horizon
+                        # Pop from global non_cond_frame_outputs
+                        wrapper.inference_state["output_dict"]["non_cond_frame_outputs"].pop(prune_idx, None)
+                        # Pop from per-object non_cond_frame_outputs
+                        for obj_out_dict in wrapper.inference_state["output_dict_per_obj"].values():
+                            obj_out_dict["non_cond_frame_outputs"].pop(prune_idx, None)
+
+                    if max_frames is not None and frame_count >= max_frames:
+                        break
+        finally:
+            gen.close()
 
         if not added_new_object:
             # Reached end of video or propagation completed without restarts
