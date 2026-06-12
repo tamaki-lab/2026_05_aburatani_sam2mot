@@ -88,10 +88,8 @@ class SAM2Wrapper:
     def propagate_in_video(self, start_frame_idx: int):
         """
         Propagates masks for all objects from the current frame.
-        Yields (frame_idx, out_obj_ids, out_mask_logits)
         """
-        for out_frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(self.inference_state, start_frame_idx=start_frame_idx):
-            yield out_frame_idx, out_obj_ids, out_mask_logits
+        return self.predictor.propagate_in_video(self.inference_state, start_frame_idx=start_frame_idx)
 
     def extract_result(self, out_obj_ids: List[int], out_mask_logits: torch.Tensor, obj_id: int) -> Tuple[Optional[np.ndarray], Optional[List[float]], float]:
         return self._extract_mask_and_box(out_obj_ids, out_mask_logits, obj_id)
@@ -149,25 +147,29 @@ class SAM2Wrapper:
                 # 1. Pad pred_masks
                 H, W = out["pred_masks"].shape[-2:]
                 dev_masks = out["pred_masks"].device
-                pad_masks = torch.full((pad_size, 1, H, W), NO_OBJ_SCORE, dtype=torch.float32, device=dev_masks)
+                dtype_masks = out["pred_masks"].dtype
+                pad_masks = torch.full((pad_size, 1, H, W), NO_OBJ_SCORE, dtype=dtype_masks, device=dev_masks)
                 out["pred_masks"] = torch.cat([out["pred_masks"], pad_masks], dim=0)
                 
                 # 2. Pad obj_ptr with zeros (since it is a feature embedding, not a logit/score)
                 hidden_dim = out["obj_ptr"].shape[-1]
                 dev_ptr = out["obj_ptr"].device
-                pad_ptr = torch.zeros((pad_size, hidden_dim), dtype=torch.float32, device=dev_ptr)
+                dtype_ptr = out["obj_ptr"].dtype
+                pad_ptr = torch.zeros((pad_size, hidden_dim), dtype=dtype_ptr, device=dev_ptr)
                 out["obj_ptr"] = torch.cat([out["obj_ptr"], pad_ptr], dim=0)
                 
                 # 3. Pad object_score_logits
                 dev_logits = out["object_score_logits"].device
-                pad_logits = torch.full((pad_size, 1), NO_OBJ_SCORE, dtype=torch.float32, device=dev_logits)
+                dtype_logits = out["object_score_logits"].dtype
+                pad_logits = torch.full((pad_size, 1), NO_OBJ_SCORE, dtype=dtype_logits, device=dev_logits)
                 out["object_score_logits"] = torch.cat([out["object_score_logits"], pad_logits], dim=0)
                 
                 # 4. Pad maskmem_features
                 if out.get("maskmem_features") is not None:
                     C, H_m, W_m = out["maskmem_features"].shape[-3:]
                     dev_feat = out["maskmem_features"].device
-                    pad_feat = torch.zeros((pad_size, C, H_m, W_m), dtype=torch.float32, device=dev_feat)
+                    dtype_feat = out["maskmem_features"].dtype
+                    pad_feat = torch.zeros((pad_size, C, H_m, W_m), dtype=dtype_feat, device=dev_feat)
                     out["maskmem_features"] = torch.cat([out["maskmem_features"], pad_feat], dim=0)
                     
                 # 5. Pad maskmem_pos_enc
@@ -176,7 +178,8 @@ class SAM2Wrapper:
                     for pos in out["maskmem_pos_enc"]:
                         C_pos, H_pos, W_pos = pos.shape[-3:]
                         dev_pos = pos.device
-                        pad_pos = torch.zeros((pad_size, C_pos, H_pos, W_pos), dtype=torch.float32, device=dev_pos)
+                        dtype_pos = pos.dtype
+                        pad_pos = torch.zeros((pad_size, C_pos, H_pos, W_pos), dtype=dtype_pos, device=dev_pos)
                         padded_pos_enc.append(torch.cat([pos, pad_pos], dim=0))
                     out["maskmem_pos_enc"] = padded_pos_enc
                 
